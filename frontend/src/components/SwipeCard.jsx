@@ -66,6 +66,37 @@ function Stat({ label, value }) {
   )
 }
 
+// Visual range bar with current-price dot
+function RangeBar({ label, low, high, current }) {
+  const pct = (low != null && high != null && high > low && current != null)
+    ? Math.max(0, Math.min(100, ((current - low) / (high - low)) * 100))
+    : null
+  return (
+    <div>
+      <span className="text-[9px] text-slate-500 uppercase tracking-wide leading-none">{label}</span>
+      <div className="flex items-center gap-2 mt-1">
+        <span className="text-[9px] text-slate-400 w-11 text-right shrink-0">
+          {low != null ? `$${fmt(low)}` : '—'}
+        </span>
+        <div className="flex-1 h-1.5 bg-white/10 rounded-full relative">
+          {pct != null && (
+            <>
+              <div className="absolute inset-y-0 left-0 rounded-full bg-purple-600/50"
+                style={{ width: `${pct}%` }} />
+              <div className="absolute top-1/2 -translate-y-1/2 w-2.5 h-2.5 rounded-full
+                              bg-purple-400 border-2 border-slate-800 shadow"
+                style={{ left: `calc(${pct}% - 5px)` }} />
+            </>
+          )}
+        </div>
+        <span className="text-[9px] text-slate-400 w-11 shrink-0">
+          {high != null ? `$${fmt(high)}` : '—'}
+        </span>
+      </div>
+    </div>
+  )
+}
+
 // Flip button
 function FlipBtn({ flipped, onClick }) {
   return (
@@ -264,20 +295,22 @@ const SwipeCard = forwardRef(function SwipeCard({ stock, onSwipe, style = {}, is
               <StockChart ticker={stock.ticker} />
             </div>
 
-            {/* Stats grid — 2 cols × 5 rows */}
-            <div className="px-4 pt-1 flex-1 min-h-0 overflow-hidden">
+            {/* Stats grid — 2 cols × 3 rows */}
+            <div className="px-4 pt-1 flex-shrink-0">
               <div className="grid grid-cols-2 gap-x-4 gap-y-2">
-                <Stat label="Day Range"    value={fmtRange(live.day_low, live.day_high)} />
-                <Stat label="52-Wk Range"  value={fmtRange(live.week_52_low, live.week_52_high)} />
-                <Stat label="Volume"       value={fmtVol(live.volume)} />
-                <Stat label="Avg Volume"   value={fmtVol(live.avg_volume)} />
-                <Stat label="Market Cap"   value={fmtLarge(live.market_cap)} />
-                <Stat label="Beta"         value={fmt(live.market_beta)} />
-                <Stat label="P/E Ratio"    value={fmt(live.pe_ratio)} />
-                <Stat label="EPS"          value={live.eps != null ? `$${fmt(live.eps)}` : '—'} />
-                <Stat label="Earnings"     value={live.earnings_date ?? '—'} />
-                <Stat label="Fwd Dividend" value={live.forward_dividend != null ? `$${fmt(live.forward_dividend)}` : '—'} />
+                <Stat label="Volume"     value={fmtVol(live.volume)} />
+                <Stat label="Avg Volume" value={fmtVol(live.avg_volume)} />
+                <Stat label="Market Cap" value={fmtLarge(live.market_cap)} />
+                <Stat label="Beta"       value={fmt(live.market_beta)} />
+                <Stat label="P/E Ratio"  value={fmt(live.pe_ratio)} />
+                <Stat label="EPS"        value={live.eps != null ? `$${fmt(live.eps)}` : '—'} />
               </div>
+            </div>
+
+            {/* Range sliders */}
+            <div className="px-4 pt-2 pb-1 flex-1 min-h-0 space-y-2">
+              <RangeBar label="Day Range"     low={live.day_low}     high={live.day_high}     current={live.price} />
+              <RangeBar label="52-Week Range" low={live.week_52_low} high={live.week_52_high} current={live.price} />
             </div>
 
             <FlipBtn flipped={false} onClick={handleFlip} />
@@ -333,10 +366,14 @@ function BackContent({ stock }) {
 
   return (
     <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4" style={{ touchAction: 'pan-y' }}>
-      {/* Description — capped at 2 sentences */}
+      {/* Description */}
       {stock.description ? (
         <p className="text-xs text-slate-300 leading-relaxed">
-          {stock.description.match(/[^.!?]+[.!?]+/g)?.slice(0, 2).join(' ') ?? stock.description}
+          {(() => {
+            const t = stock.description.trimEnd()
+            const last = t.search(/[.!?][^.!?]*$/)
+            return last !== -1 ? t.slice(0, last + 1) : t
+          })()}
         </p>
       ) : (
         <p className="text-xs text-slate-500 italic">No company description available.</p>

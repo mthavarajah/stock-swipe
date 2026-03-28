@@ -318,7 +318,41 @@ def fetch_sentiment(ticker: str, news_api_key: str) -> float | None:
         return None
 
 
-def fetch_live_quote(ticker: str) -> dict | None:
+def _fetch_wikipedia_description(name: str, ticker: str) -> str | None:
+    """Company description from Wikipedia — no API key, no IP restrictions."""
+    headers = {"User-Agent": "stock-swipe/1.0 (educational project)"}
+    for q in ([name.strip()] if name and name.strip() else []) + [ticker]:
+        if not q:
+            continue
+        try:
+            r = requests.get(
+                "https://en.wikipedia.org/w/api.php",
+                params={
+                    "action":      "query",
+                    "titles":      q,
+                    "prop":        "extracts",
+                    "exintro":     "1",
+                    "explaintext": "1",
+                    "redirects":   "1",
+                    "format":      "json",
+                },
+                headers=headers,
+                timeout=5,
+            )
+            if not r.ok:
+                continue
+            pages = r.json().get("query", {}).get("pages", {})
+            for page in pages.values():
+                if page.get("pageid", -1) > 0:
+                    extract = (page.get("extract") or "").strip()
+                    if len(extract) > 50:
+                        return extract[:1200]
+        except Exception:
+            pass
+    return None
+
+
+def fetch_live_quote(ticker: str, name: str = "") -> dict | None:
     """
     Live quote. Tries Alpaca snapshot first, falls back to yfinance for local dev.
     """
@@ -331,24 +365,42 @@ def fetch_live_quote(ticker: str) -> dict | None:
         price  = _safe_float(trade.get("p")) or _safe_float(daily.get("c"))
         prev_c = _safe_float(prev.get("c"))
         pct    = round((price - prev_c) / prev_c * 100, 2) if price and prev_c else None
+
+        # 1-year weekly bars → 52-week high/low + approx avg daily volume
+        week_52_high = week_52_low = avg_volume = None
+        params_1y = _alpaca_period_params("1Y")
+        bars_1y = _alpaca(f"{ticker}/bars", **params_1y)
+        if bars_1y and bars_1y.get("bars"):
+            bars  = bars_1y["bars"]
+            highs = [h for b in bars if (h := _safe_float(b.get("h"))) is not None]
+            lows  = [l for b in bars if (l := _safe_float(b.get("l"))) is not None]
+            vols  = [v for b in bars if (v := _safe_float(b.get("v"))) is not None]
+            if highs: week_52_high = round(max(highs), 2)
+            if lows:  week_52_low  = round(min(lows),  2)
+            # weekly bar volume ÷ 5 trading days ≈ avg daily volume
+            if vols:  avg_volume   = round(sum(vols) / len(vols) / 5)
+
+        # Description from Wikipedia (no auth, works from all IPs)
+        description = _fetch_wikipedia_description(name, ticker)
+
         return {
             "ticker":          ticker,
             "price":           price,
             "day_change_pct":  pct,
             "day_low":         _safe_float(daily.get("l")),
             "day_high":        _safe_float(daily.get("h")),
-            "week_52_low":     None,   # not in snapshot — falls back to Snowflake
-            "week_52_high":    None,
+            "week_52_low":     week_52_low,
+            "week_52_high":    week_52_high,
             "volume":          _safe_float(daily.get("v")),
-            "avg_volume":      None,
-            "market_cap":      None,
+            "avg_volume":      avg_volume,
+            "market_cap":      None,   # fundamentals not in Alpaca — fall back to Snowflake
             "pe_ratio":        None,
             "eps":             None,
             "market_beta":     None,
             "dividend_yield":  None,
             "forward_dividend": None,
             "earnings_date":   None,
-            "description":     None,
+            "description":     description,
         }
 
     # ── yfinance fallback (local dev) ────────────────────────────────────────

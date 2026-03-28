@@ -255,7 +255,13 @@ export default function Index() {
   const metrics = useMemo(() => {
     const stocks = portfolio.filter(s => selected.has(s.ticker))
     if (!stocks.length) return null
-    const live = stocks.map(s => ({ ...s, ...(quotes[s.ticker] ?? {}) }))
+    // Only apply non-null quote values so Alpaca nulls don't overwrite Snowflake data
+    const live = stocks.map(s => {
+      const q = quotes[s.ticker]
+      if (!q) return s
+      const overrides = Object.fromEntries(Object.entries(q).filter(([, v]) => v != null))
+      return { ...s, ...overrides }
+    })
     const totalMktCap = live.reduce((a, s) => a + (s.market_cap ?? 0), 0)
     const validPE   = live.filter(s => s.pe_ratio    != null)
     const validBeta = live.filter(s => s.market_beta != null)

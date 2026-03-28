@@ -528,7 +528,14 @@ def stock_quote(ticker: str) -> dict:
     if cached and (now - cached[0]) < _QUOTE_TTL:
         return cached[1]
 
-    result = fetch_live_quote(key)
+    # Fetch stock name from Snowflake for a better Wikipedia description match
+    stock_row = fetch_one(
+        "SELECT name FROM STOCKS WHERE ticker = %(ticker)s",
+        {"ticker": key},
+    )
+    name = (stock_row or {}).get("name") or ""
+
+    result = fetch_live_quote(key, name=name)
     if result is None:
         raise HTTPException(status_code=404, detail=f"No quote data for {ticker}")
 

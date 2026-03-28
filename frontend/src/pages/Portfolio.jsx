@@ -26,8 +26,8 @@ function matchBadgeColor(pct) {
   return 'bg-white/10 text-slate-400'
 }
 
-// ── Sector breakdown bar ─────────────────────────────────────────────────────
-function SectorBar({ stocks }) {
+// ── Sector breakdown bar + filter ────────────────────────────────────────────
+function SectorBar({ stocks, selectedSectors, onToggleSector, onClearSectors }) {
   const counts = useMemo(() => {
     const map = {}
     for (const s of stocks) {
@@ -39,29 +39,58 @@ function SectorBar({ stocks }) {
 
   if (counts.length === 0) return null
   const total = stocks.length
+  const hasFilter = selectedSectors.size > 0
 
   return (
     <div className="mb-4">
-      <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">
-        Sector breakdown
-      </p>
-      <div className="flex h-2.5 rounded-full overflow-hidden gap-px">
+      <div className="flex items-center justify-between mb-2">
+        <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
+          Sector
+        </p>
+        {hasFilter && (
+          <button
+            onClick={onClearSectors}
+            className="text-[10px] text-purple-400 hover:text-purple-300 transition-colors"
+          >
+            Clear filter
+          </button>
+        )}
+      </div>
+      {/* Proportion bar */}
+      <div className="flex h-2.5 rounded-full overflow-hidden gap-px mb-2">
         {counts.map(([sector, count]) => (
           <div
             key={sector}
-            className={`${SECTOR_BG[sector] ?? 'bg-slate-500'} transition-all`}
+            onClick={() => onToggleSector(sector)}
+            className={`${SECTOR_BG[sector] ?? 'bg-slate-500'} cursor-pointer transition-opacity ${
+              hasFilter && !selectedSectors.has(sector) ? 'opacity-25' : 'opacity-100'
+            }`}
             style={{ width: `${(count / total) * 100}%` }}
-            title={`${sector}: ${count}`}
+            title={sector}
           />
         ))}
       </div>
-      <div className="flex flex-wrap gap-x-3 gap-y-1 mt-2">
-        {counts.map(([sector, count]) => (
-          <span key={sector} className="flex items-center gap-1 text-[10px] text-slate-500">
-            <span className={`inline-block w-2 h-2 rounded-full ${SECTOR_BG[sector] ?? 'bg-slate-500'}`} />
-            {sector} ({count})
-          </span>
-        ))}
+      {/* Clickable sector pills */}
+      <div className="flex flex-wrap gap-1.5">
+        {counts.map(([sector, count]) => {
+          const active = !hasFilter || selectedSectors.has(sector)
+          return (
+            <button
+              key={sector}
+              onClick={() => onToggleSector(sector)}
+              className={`flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full border transition-all ${
+                selectedSectors.has(sector)
+                  ? 'border-purple-400/60 bg-purple-500/15 text-purple-300'
+                  : active
+                    ? 'border-white/10 bg-white/5 text-slate-400 hover:bg-white/10 hover:text-slate-300'
+                    : 'border-white/5 bg-transparent text-slate-600 hover:text-slate-400'
+              }`}
+            >
+              <span className={`inline-block w-1.5 h-1.5 rounded-full ${SECTOR_BG[sector] ?? 'bg-slate-500'}`} />
+              {sector} <span className="text-slate-500">({count})</span>
+            </button>
+          )
+        })}
       </div>
     </div>
   )
@@ -179,11 +208,20 @@ export default function Portfolio() {
   const setSortBy = useSession(s => s.setPortfolioSortBy)
   const userId    = useSession(s => s.userId)
 
-  const [selectedStock, setSelectedStock] = useState(null)
+  const [selectedStock, setSelectedStock]     = useState(null)
+  const [selectedSectors, setSelectedSectors] = useState(new Set())
 
   if (!userId) {
     navigate('/onboard', { replace: true })
     return null
+  }
+
+  function toggleSector(sector) {
+    setSelectedSectors(prev => {
+      const next = new Set(prev)
+      next.has(sector) ? next.delete(sector) : next.add(sector)
+      return next
+    })
   }
 
   const sorted = useMemo(() => {
@@ -193,6 +231,13 @@ export default function Portfolio() {
     if (sortBy === 'sector') arr.sort((a, b) => (a.sector ?? 'zzz').localeCompare(b.sector ?? 'zzz'))
     return arr
   }, [portfolio, sortBy])
+
+  const visible = useMemo(
+    () => selectedSectors.size === 0
+      ? sorted
+      : sorted.filter(s => selectedSectors.has(s.sector ?? 'Other')),
+    [sorted, selectedSectors]
+  )
 
   return (
     <div className="min-h-screen bg-slate-900 max-w-sm mx-auto pb-24 flex flex-col">
@@ -253,9 +298,14 @@ export default function Portfolio() {
           </div>
         ) : (
           <div className="px-4 pt-4">
-            <SectorBar stocks={portfolio} />
+            <SectorBar
+              stocks={portfolio}
+              selectedSectors={selectedSectors}
+              onToggleSector={toggleSector}
+              onClearSectors={() => setSelectedSectors(new Set())}
+            />
             <div className="grid grid-cols-2 gap-3">
-              {sorted.map((stock, i) => (
+              {visible.map((stock, i) => (
                 <motion.div
                   key={stock.ticker}
                   initial={{ opacity: 0, y: 12 }}
