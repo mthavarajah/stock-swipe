@@ -1,0 +1,24 @@
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+pydantic==2.7.1
+
+# Data
+yfinance==0.2.38
+pandas==2.2.2
+numpy==1.26.4
+scikit-learn==1.4.2
+textblob==0.18.0
+requests==2.31.0
+lxml                              # HTML parser for BeautifulSoup
+beautifulsoup4                    # Wikipedia ticker scraper
+html5lib
+
+# Snowflake
+snowflake-connector-python[pandas]==3.9.0
+
+# ML
+scipy==1.13.0
+
+# Utilities
+python-dotenv==1.0.1
+tqdm

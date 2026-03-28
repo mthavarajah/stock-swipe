@@ -1,0 +1,12 @@
+@import "tailwindcss";
+
+body {
+  font-family: 'Inter', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  background-color: #0f172a; /* slate-900 */
+}
+
+/* Prevent body scroll when swiping cards */
+.swipe-container {
+  touch-action: none;
+}
