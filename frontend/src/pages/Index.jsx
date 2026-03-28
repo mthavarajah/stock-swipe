@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { motion } from 'framer-motion'
+import { motion, AnimatePresence } from 'framer-motion'
 import { useSession } from '../store/useSession'
 import IndexChart from '../components/IndexChart'
 import { getStockQuote } from '../api/client'
@@ -112,7 +112,6 @@ function ComponentRow({ stock, selected, onToggle, quote, weight, onWeightCommit
         selected ? 'bg-white/5' : 'opacity-40'
       }`}
     >
-      {/* Toggle dot */}
       <div className={`w-4 h-4 rounded-full border-2 flex-shrink-0 transition-colors ${
         selected ? 'border-purple-400 bg-purple-400' : 'border-slate-600 bg-transparent'
       }`}>
@@ -123,20 +122,12 @@ function ComponentRow({ stock, selected, onToggle, quote, weight, onWeightCommit
           </svg>
         )}
       </div>
-
-      {/* Sector dot */}
       <div className={`w-2 h-2 rounded-full flex-shrink-0 ${SECTOR_COLORS[stock.sector] ?? 'bg-slate-500'}`} />
-
-      {/* Name */}
       <div className="flex-1 text-left min-w-0">
         <p className="text-sm font-semibold text-white leading-none">{stock.ticker}</p>
         <p className="text-[10px] text-slate-400 mt-0.5 truncate">{stock.name}</p>
       </div>
-
-      {/* Editable weight */}
       <WeightCell weight={weight} selected={selected} onCommit={onWeightCommit} />
-
-      {/* Price / change */}
       <div className="text-right w-20">
         <p className="text-xs font-semibold text-white">
           {price != null ? `$${fmt(price)}` : '—'}
@@ -157,35 +148,72 @@ function MetricCard({ label, value }) {
   )
 }
 
+// ── redistribute helper ───────────────────────────────────────────────────────
+function redistribute(currentWeights, changedTicker, newVal, allTickers) {
+  const clamped = Math.min(100, Math.max(0, newVal))
+  const others  = allTickers.filter(t => t !== changedTicker)
+  const result  = { ...currentWeights, [changedTicker]: clamped }
+
+  if (others.length === 0) {
+    result[changedTicker] = 100
+    return result
+  }
+
+  const remaining     = 100 - clamped
+  const othersTotal   = others.reduce((s, t) => s + (currentWeights[t] ?? 0), 0)
+
+  if (othersTotal === 0) {
+    const share = parseFloat((remaining / others.length).toFixed(1))
+    others.forEach(t => { result[t] = share })
+  } else {
+    others.forEach(t => {
+      result[t] = parseFloat(((currentWeights[t] / othersTotal) * remaining).toFixed(1))
+    })
+  }
+  return result
+}
+
 // ── main page ─────────────────────────────────────────────────────────────────
 export default function Index() {
   const navigate  = useNavigate()
   const portfolio = useSession(s => s.portfolio)
   const userId    = useSession(s => s.userId)
 
-  const [selected, setSelected] = useState(new Set())
-  const [weights, setWeights]   = useState({})   // ticker → weight number
-  const [period, setPeriod]     = useState('1M')
-  const [quotes, setQuotes]     = useState({})
+  const [selected, setSelected]         = useState(new Set())
+  const [draftWeights, setDraftWeights] = useState({})
+  const [chartWeights, setChartWeights] = useState({})   // confirmed — drives the chart
+  const [weightsDirty, setWeightsDirty] = useState(false)
+  const [weightError, setWeightError]   = useState('')
+  const [period, setPeriod]             = useState('1M')
+  const [quotes, setQuotes]             = useState({})
 
   if (!userId) { navigate('/onboard', { replace: true }); return null }
 
-  // Pre-select all portfolio stocks on mount
   useEffect(() => {
     setSelected(new Set(portfolio.map(s => s.ticker)))
   }, [portfolio.length])
 
-  // Reset weights to equal split whenever the selected set changes
   const selectedTickers = useMemo(
     () => portfolio.filter(s => selected.has(s.ticker)).map(s => s.ticker),
     [portfolio, selected]
   )
 
+  // Reset weights to equal whenever selected set changes
   useEffect(() => {
     const n = selectedTickers.length
-    if (!n) { setWeights({}); return }
+    if (!n) {
+      setDraftWeights({})
+      setChartWeights({})
+      setWeightsDirty(false)
+      setWeightError('')
+      return
+    }
     const equal = parseFloat((100 / n).toFixed(1))
-    setWeights(Object.fromEntries(selectedTickers.map(t => [t, equal])))
+    const w = Object.fromEntries(selectedTickers.map(t => [t, equal]))
+    setDraftWeights(w)
+    setChartWeights(w)
+    setWeightsDirty(false)
+    setWeightError('')
   }, [selectedTickers.join(',')])
 
   // Fetch live quotes
@@ -198,31 +226,46 @@ export default function Index() {
     }
   }, [portfolio.length])
 
-  // Update a single weight; keep others unchanged (user takes responsibility for sum)
+  // Auto-redistribute other weights when one is edited
   function handleWeightCommit(ticker, newVal) {
-    setWeights(prev => ({ ...prev, [ticker]: newVal }))
+    const newWeights = redistribute(draftWeights, ticker, newVal, selectedTickers)
+    setDraftWeights(newWeights)
+    setWeightsDirty(true)
+    setWeightError('')
   }
 
-  // Check if weights are all equal (for label)
-  const totalWeight = selectedTickers.reduce((sum, t) => sum + (weights[t] ?? 0), 0)
+  // Confirm: validate sum and apply to chart
+  function handleConfirm() {
+    const total = selectedTickers.reduce((s, t) => s + (draftWeights[t] ?? 0), 0)
+    if (Math.abs(total - 100) > 1) {
+      setWeightError(`Weights add up to ${total.toFixed(1)}% — they must equal 100%`)
+      return
+    }
+    setChartWeights({ ...draftWeights })
+    setWeightsDirty(false)
+    setWeightError('')
+  }
+
+  const totalDraft = selectedTickers.reduce((s, t) => s + (draftWeights[t] ?? 0), 0)
   const isEqualWeight = selectedTickers.length > 0 && selectedTickers.every(t => {
     const equal = parseFloat((100 / selectedTickers.length).toFixed(1))
-    return Math.abs((weights[t] ?? equal) - equal) < 0.2
+    return Math.abs((draftWeights[t] ?? equal) - equal) < 0.2
   })
 
-  // Aggregate metrics across selected stocks
   const metrics = useMemo(() => {
     const stocks = portfolio.filter(s => selected.has(s.ticker))
     if (!stocks.length) return null
     const live = stocks.map(s => ({ ...s, ...(quotes[s.ticker] ?? {}) }))
     const totalMktCap = live.reduce((a, s) => a + (s.market_cap ?? 0), 0)
-    const validPE     = live.filter(s => s.pe_ratio    != null)
-    const validBeta   = live.filter(s => s.market_beta != null)
-    const validChg    = live.filter(s => s.day_change_pct != null)
-    const avgPE       = validPE.length   ? validPE.reduce((a, s)   => a + s.pe_ratio, 0)      / validPE.length   : null
-    const avgBeta     = validBeta.length ? validBeta.reduce((a, s) => a + s.market_beta, 0)   / validBeta.length : null
-    const avgChg      = validChg.length  ? validChg.reduce((a, s)  => a + s.day_change_pct, 0) / validChg.length  : null
-    return { totalMktCap, avgPE, avgBeta, avgChg }
+    const validPE   = live.filter(s => s.pe_ratio    != null)
+    const validBeta = live.filter(s => s.market_beta != null)
+    const validChg  = live.filter(s => s.day_change_pct != null)
+    return {
+      totalMktCap,
+      avgPE:   validPE.length   ? validPE.reduce((a, s)   => a + s.pe_ratio, 0)      / validPE.length   : null,
+      avgBeta: validBeta.length ? validBeta.reduce((a, s) => a + s.market_beta, 0)   / validBeta.length : null,
+      avgChg:  validChg.length  ? validChg.reduce((a, s)  => a + s.day_change_pct, 0) / validChg.length  : null,
+    }
   }, [portfolio, selected, quotes])
 
   function toggleAll() {
@@ -255,7 +298,6 @@ export default function Index() {
           )}
         </div>
 
-        {/* Chart */}
         {portfolio.length === 0 ? (
           <div className="h-48 flex flex-col items-center justify-center gap-3 text-center">
             <span className="text-4xl">📊</span>
@@ -266,7 +308,7 @@ export default function Index() {
             tickers={selectedTickers}
             period={period}
             onPeriodChange={setPeriod}
-            weights={weights}
+            weights={chartWeights}
           />
         )}
       </div>
@@ -289,9 +331,7 @@ export default function Index() {
             <p className="text-xs font-semibold text-slate-300 uppercase tracking-wide">Components</p>
             {selectedTickers.length > 0 && (
               <p className="text-[10px] text-slate-500 mt-0.5">
-                {isEqualWeight
-                  ? 'Equal weight · tap % to edit'
-                  : `${totalWeight.toFixed(1)}% allocated · tap % to edit`}
+                {isEqualWeight ? 'Equal weight · tap % to edit' : `${totalDraft.toFixed(1)}% allocated · tap % to edit`}
               </p>
             )}
           </div>
@@ -304,6 +344,39 @@ export default function Index() {
             </button>
           )}
         </div>
+
+        {/* Confirm bar */}
+        <AnimatePresence>
+          {weightsDirty && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: 0.2 }}
+              className="overflow-hidden"
+            >
+              <div className="px-4 py-2 bg-purple-500/10 border-b border-purple-500/20 flex items-center justify-between gap-3">
+                <div className="flex-1 min-w-0">
+                  {weightError ? (
+                    <p className="text-[11px] text-rose-400 font-medium">{weightError}</p>
+                  ) : (
+                    <p className="text-[11px] text-purple-300">
+                      Total: <span className={Math.abs(totalDraft - 100) > 1 ? 'text-rose-400 font-bold' : 'text-white font-bold'}>{totalDraft.toFixed(1)}%</span>
+                      {Math.abs(totalDraft - 100) <= 1 && <span className="text-slate-400"> · ready to apply</span>}
+                    </p>
+                  )}
+                </div>
+                <button
+                  onClick={handleConfirm}
+                  className="text-[11px] font-semibold bg-purple-500 hover:bg-purple-400 text-white
+                             px-3 py-1.5 rounded-lg transition-colors flex-shrink-0"
+                >
+                  Apply Weights
+                </button>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {/* Column labels */}
         {portfolio.length > 0 && (
@@ -331,7 +404,7 @@ export default function Index() {
             {portfolio.map(stock => {
               const isSel = selected.has(stock.ticker)
               const n     = selectedTickers.length || 1
-              const w     = weights[stock.ticker] ?? parseFloat((100 / n).toFixed(1))
+              const w     = draftWeights[stock.ticker] ?? parseFloat((100 / n).toFixed(1))
               return (
                 <ComponentRow
                   key={stock.ticker}

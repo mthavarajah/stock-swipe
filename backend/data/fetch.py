@@ -10,6 +10,32 @@ import requests
 import yfinance as yf
 from textblob import TextBlob
 
+# --------------------------------------------------------------------------- #
+# Twelvedata helper (works from all cloud IPs unlike yfinance)                 #
+# --------------------------------------------------------------------------- #
+
+_TD_KEY  = os.getenv("TWELVEDATA_API_KEY", "")
+_TD_BASE = "https://api.twelvedata.com"
+
+def _td(endpoint: str, **params) -> dict | None:
+    """Call Twelvedata API. Returns parsed JSON or None on any failure."""
+    if not _TD_KEY:
+        return None
+    try:
+        r = requests.get(
+            f"{_TD_BASE}/{endpoint}",
+            params={**params, "apikey": _TD_KEY},
+            timeout=10,
+        )
+        r.raise_for_status()
+        data = r.json()
+        # Twelvedata returns {"status": "error", "code": 400, "message": "..."}
+        if data.get("status") == "error" or "code" in data:
+            return None
+        return data
+    except Exception:
+        return None
+
 
 # --------------------------------------------------------------------------- #
 # Tickers                                                                      #
@@ -51,6 +77,19 @@ def fetch_price_history(ticker: str) -> pd.DataFrame | None:
 # Live price history (API endpoint)                                            #
 # --------------------------------------------------------------------------- #
 
+# Twelvedata interval/outputsize config per UI period
+_TD_PERIOD = {
+    "1D":  {"interval": "5min",   "outputsize": 78},
+    "5D":  {"interval": "1h",     "outputsize": 40},
+    "1M":  {"interval": "1day",   "outputsize": 30},
+    "6M":  {"interval": "1day",   "outputsize": 180},
+    "YTD": {"interval": "1day",   "outputsize": 90},
+    "1Y":  {"interval": "1week",  "outputsize": 52},
+    "5Y":  {"interval": "1month", "outputsize": 60},
+    "All": {"interval": "1month", "outputsize": 240},
+}
+
+# yfinance fallback config
 PERIOD_MAP = {
     "1D":  {"period": "1d",  "interval": "5m"},
     "5D":  {"period": "5d",  "interval": "15m"},
@@ -62,58 +101,74 @@ PERIOD_MAP = {
     "All": {"period": "max", "interval": "3mo"},
 }
 
+
 def fetch_ohlcv(ticker: str, ui_period: str) -> dict | None:
     """
-    Fetch live OHLCV for a ticker and UI period label.
-    Uses Ticker.history() to avoid MultiIndex issues with yf.download().
-    Returns the response dict or None on failure.
+    Fetch live OHLCV. Tries Twelvedata first (reliable from cloud IPs),
+    falls back to yfinance for local dev.
     """
-    params = PERIOD_MAP.get(ui_period, PERIOD_MAP["1M"])
+    # ── Twelvedata (primary on Render) ──────────────────────────────────────
+    td_cfg = _TD_PERIOD.get(ui_period, _TD_PERIOD["1M"])
+    td = _td("time_series", symbol=ticker, **td_cfg)
+    if td and td.get("values"):
+        values = list(reversed(td["values"]))   # newest-first → oldest-first
+        rows = []
+        for v in values:
+            close = _safe_float(v.get("close"))
+            if close is None:
+                continue
+            dt = v.get("datetime", "")
+            rows.append({
+                "date":   dt + "T00:00:00Z" if len(dt) == 10 else dt + "Z",
+                "close":  round(close, 4),
+                "open":   round(_safe_float(v.get("open"))  or close, 4),
+                "high":   round(_safe_float(v.get("high"))  or close, 4),
+                "low":    round(_safe_float(v.get("low"))   or close, 4),
+                "volume": int(float(v["volume"])) if v.get("volume") else None,
+            })
+        if len(rows) >= 2:
+            first, last = rows[0]["close"], rows[-1]["close"]
+            return {
+                "ticker":     ticker,
+                "period":     ui_period,
+                "change_pct": round((last - first) / first * 100, 2) if first else 0.0,
+                "change_abs": round(last - first, 2),
+                "data":       rows,
+            }
+
+    # ── yfinance fallback (local dev) ────────────────────────────────────────
+    yf_cfg = PERIOD_MAP.get(ui_period, PERIOD_MAP["1M"])
     try:
-        t = yf.Ticker(ticker)
-        hist = t.history(
-            period=params["period"],
-            interval=params["interval"],
-            auto_adjust=True,
-        )
+        t    = yf.Ticker(ticker)
+        hist = t.history(period=yf_cfg["period"], interval=yf_cfg["interval"], auto_adjust=True)
         if hist is None or hist.empty:
             return None
-
-        # Ticker.history() always returns flat columns — no MultiIndex
         hist.columns = [str(c).lower() for c in hist.columns]
-
         rows = []
         for ts, row in hist.iterrows():
             date_str = ts.strftime("%Y-%m-%dT%H:%M:%SZ") if hasattr(ts, "strftime") else str(ts)
+            close = _safe_float(row.get("close"))
+            if close is None:
+                continue
             rows.append({
                 "date":   date_str,
-                "close":  _safe_float(row.get("close")),
+                "close":  close,
                 "open":   _safe_float(row.get("open")),
                 "high":   _safe_float(row.get("high")),
                 "low":    _safe_float(row.get("low")),
                 "volume": _safe_float(row.get("volume")),
             })
-
-        rows = [r for r in rows if r["close"] is not None]
-
         if len(rows) < 2:
             return None
-
-        first_close = rows[0]["close"] or 0
-        last_close  = rows[-1]["close"] or 0
-        change_abs  = last_close - first_close
-        change_pct  = (change_abs / first_close * 100) if first_close else 0.0
-
+        first, last = rows[0]["close"] or 0, rows[-1]["close"] or 0
         return {
             "ticker":     ticker,
             "period":     ui_period,
-            "change_pct": round(change_pct, 2),
-            "change_abs": round(change_abs, 2),
+            "change_pct": round((last - first) / first * 100, 2) if first else 0.0,
+            "change_abs": round(last - first, 2),
             "data":       rows,
         }
     except Exception:
-        import traceback
-        traceback.print_exc()
         return None
 
 
@@ -256,90 +311,114 @@ def fetch_sentiment(ticker: str, news_api_key: str) -> float | None:
 
 def fetch_live_quote(ticker: str) -> dict | None:
     """
-    Full live quote for a ticker via yfinance t.info.
-    Returns all metrics shown on the card. Cached 5 min on the backend.
+    Live quote. Tries Twelvedata first, falls back to yfinance for local dev.
     """
+    # ── Twelvedata (primary on Render) ──────────────────────────────────────
+    td = _td("quote", symbol=ticker)
+    if td and td.get("close"):
+        close      = _safe_float(td.get("close"))
+        prev_close = _safe_float(td.get("previous_close"))
+        pct        = _safe_float(td.get("percent_change"))
+        fw52       = td.get("fifty_two_week", {})
+        return {
+            "ticker":          ticker,
+            "price":           close,
+            "day_change_pct":  pct,
+            "day_low":         _safe_float(td.get("low")),
+            "day_high":        _safe_float(td.get("high")),
+            "week_52_low":     _safe_float(fw52.get("low")),
+            "week_52_high":    _safe_float(fw52.get("high")),
+            "volume":          _safe_float(td.get("volume")),
+            "avg_volume":      _safe_float(td.get("average_volume")),
+            # Fundamentals not in Twelvedata free quote — fall back to Snowflake
+            "market_cap":      None,
+            "pe_ratio":        None,
+            "eps":             None,
+            "market_beta":     None,
+            "dividend_yield":  None,
+            "forward_dividend": None,
+            "earnings_date":   None,
+            "description":     None,
+        }
+
+    # ── yfinance fallback (local dev) ────────────────────────────────────────
     try:
         t    = yf.Ticker(ticker)
         info = t.info or {}
-
-        # Price & day change
         price      = _safe_float(info.get("currentPrice") or info.get("regularMarketPrice"))
         prev_close = _safe_float(info.get("previousClose") or info.get("regularMarketPreviousClose"))
         day_change_pct = None
         if price is not None and prev_close:
             day_change_pct = round((price - prev_close) / prev_close * 100, 2)
-
-        # Dividend yield as a percentage
-        dy = info.get("dividendYield")
-        dividend_yield = float(dy) if dy else None
-
-        # Upcoming earnings date only (must be in the future)
+        dy   = info.get("dividendYield")
+        desc = (info.get("longBusinessSummary") or "")[:600] or None
         earnings_date = None
         try:
             cal = t.calendar
             if isinstance(cal, dict):
-                ed_list = cal.get("Earnings Date", [])
                 today = datetime.utcnow().date()
-                for ed in ed_list:
-                    try:
-                        d = ed if hasattr(ed, "year") else pd.to_datetime(ed).date()
-                        if d >= today:
-                            earnings_date = d.strftime("%b %d, %Y")
-                            break
-                    except Exception:
-                        pass
+                for ed in cal.get("Earnings Date", []):
+                    d = ed if hasattr(ed, "year") else pd.to_datetime(ed).date()
+                    if d >= today:
+                        earnings_date = d.strftime("%b %d, %Y")
+                        break
         except Exception:
             pass
-
-        desc = info.get("longBusinessSummary", "") or ""
-
         return {
             "ticker":          ticker,
-            # Price
             "price":           price,
             "day_change_pct":  day_change_pct,
-            # Ranges
             "day_low":         _safe_float(info.get("dayLow")),
             "day_high":        _safe_float(info.get("dayHigh")),
             "week_52_low":     _safe_float(info.get("fiftyTwoWeekLow")),
             "week_52_high":    _safe_float(info.get("fiftyTwoWeekHigh")),
-            # Volume
             "volume":          _safe_float(info.get("volume") or info.get("regularMarketVolume")),
             "avg_volume":      _safe_float(info.get("averageVolume")),
-            # Fundamentals
             "market_cap":      _safe_float(info.get("marketCap")),
             "pe_ratio":        _safe_float(info.get("trailingPE") or info.get("forwardPE")),
             "eps":             _safe_float(info.get("trailingEps")),
             "market_beta":     _safe_float(info.get("beta")),
-            "dividend_yield":  dividend_yield,
-            "forward_dividend":_safe_float(info.get("dividendRate")),
+            "dividend_yield":  float(dy) if dy else None,
+            "forward_dividend": _safe_float(info.get("dividendRate")),
             "earnings_date":   earnings_date,
-            # Description
-            "description":     desc[:600] if desc else None,
+            "description":     desc,
         }
     except Exception:
-        import traceback; traceback.print_exc()
         return None
 
 
 def fetch_news_articles(ticker: str, _company_name: str = "", _news_api_key: str = "") -> list[dict]:
     """
-    Fetch top 4 news articles for a ticker via yfinance.
-    Returns list of {title, source, url, published_at, sentiment} dicts.
+    Fetch top 4 news articles. Tries Twelvedata first, falls back to yfinance.
     """
+    # ── Twelvedata (primary on Render) ──────────────────────────────────────
+    td = _td("news", symbol=ticker, outputsize=4)
+    if td and isinstance(td, list) and len(td) > 0:
+        result = []
+        for item in td[:4]:
+            title = (item.get("title") or "").strip()
+            if not title:
+                continue
+            result.append({
+                "title":        title[:140],
+                "source":       item.get("source", ""),
+                "url":          item.get("url", ""),
+                "published_at": item.get("datetime", ""),
+                "sentiment":    round(TextBlob(title).sentiment.polarity, 3),
+            })
+        if result:
+            return result
+
+    # ── yfinance fallback (local dev) ────────────────────────────────────────
     try:
-        t    = yf.Ticker(ticker)
-        raw  = t.news or []
+        t   = yf.Ticker(ticker)
+        raw = t.news or []
         result = []
         for item in raw:
-            # yfinance 0.2.x nests content inside item['content']
             content = item.get("content") or item
             title = (content.get("title") or "").strip()
             if not title:
                 continue
-
-            # URL: prefer canonicalUrl, fall back to clickThroughUrl or link
             url = (
                 (content.get("canonicalUrl") or {}).get("url")
                 or (content.get("clickThroughUrl") or {}).get("url")
@@ -350,7 +429,6 @@ def fetch_news_articles(ticker: str, _company_name: str = "", _news_api_key: str
                 or content.get("publisher", "")
             )
             pub_date = content.get("pubDate") or content.get("providerPublishTime")
-
             result.append({
                 "title":        title[:140],
                 "source":       source,

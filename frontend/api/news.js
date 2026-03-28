@@ -1,4 +1,4 @@
-// Yahoo Finance RSS feed — no auth needed
+// Google News RSS — no auth, works from all cloud IPs
 function sentiment(text) {
   const pos = ['up', 'gain', 'rise', 'rises', 'growth', 'profit', 'beats', 'beat',
                'surge', 'strong', 'record', 'high', 'boost', 'rally', 'wins', 'buy']
@@ -26,7 +26,7 @@ function parseRSS(xml) {
     const pubDate   = block.match(/<pubDate>(.*?)<\/pubDate>/)?.[1] ?? null
     const source    = block.match(/<source[^>]*>(.*?)<\/source>/)?.[1]
                    ?? block.match(/<description><!\[CDATA\[(.*?)\]\]><\/description>/)?.[1]?.slice(0, 40)
-                   ?? 'Yahoo Finance'
+                   ?? 'Google News'
 
     if (title) {
       items.push({
@@ -47,7 +47,7 @@ export default async function handler(req, res) {
   if (!ticker) return res.status(400).json({ error: 'ticker required' })
 
   const sym = ticker.toUpperCase()
-  const url = `https://feeds.finance.yahoo.com/rss/2.0/headline?s=${sym}&region=US&lang=en-US`
+  const url = `https://news.google.com/rss/search?q=${encodeURIComponent(sym + ' stock')}&hl=en-US&gl=US&ceid=US:en`
 
   try {
     const r = await fetch(url, {
