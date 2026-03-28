@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { AnimatePresence } from 'framer-motion'
 import SwipeCard from './SwipeCard'
 import { swipe as apiSwipe, nextBatch as apiNextBatch } from '../api/client'
@@ -24,6 +24,7 @@ export default function SwipeStack() {
   const addToPortfolio      = useSession(s => s.addToPortfolio)
 
   const [fetching, setFetching] = useState(false)
+  const topCardRef = useRef(null)
 
   const handleSwipe = useCallback(async (stock, direction) => {
     // Remove card from top of queue immediately (optimistic)
@@ -64,6 +65,17 @@ export default function SwipeStack() {
     }
   }, [userId, batch, swipeCount, fetching, shiftBatch, appendBatch, updateAfterSwipe, addToPortfolio])
 
+  // ── Keyboard shortcuts ────────────────────────────────────────────────────
+  useEffect(() => {
+    function onKey(e) {
+      if (batch.length === 0) return
+      if (e.key === 'ArrowLeft')  topCardRef.current?.triggerSwipe('left')
+      if (e.key === 'ArrowRight') topCardRef.current?.triggerSwipe('right')
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [batch])
+
   // ── Empty state ────────────────────────────────────────────────────────────
   if (batch.length === 0) {
     return (
@@ -98,6 +110,7 @@ export default function SwipeStack() {
           return (
             <SwipeCard
               key={stock.ticker + '-' + stackIdx}
+              ref={isTop ? topCardRef : null}
               stock={stock}
               isTop={isTop}
               onSwipe={(dir) => handleSwipe(stock, dir)}

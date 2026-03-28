@@ -11,28 +11,31 @@ import yfinance as yf
 from textblob import TextBlob
 
 # --------------------------------------------------------------------------- #
-# Twelvedata helper (works from all cloud IPs unlike yfinance)                 #
+# Alpaca market data (works from all cloud IPs unlike yfinance)                #
 # --------------------------------------------------------------------------- #
 
-_TD_KEY  = os.getenv("TWELVEDATA_API_KEY", "")
-_TD_BASE = "https://api.twelvedata.com"
+_ALPACA_KEY    = os.getenv("APCA_API_KEY_ID", "")
+_ALPACA_SECRET = os.getenv("APCA_API_SECRET_KEY", "")
+_ALPACA_BASE   = "https://data.alpaca.markets/v2/stocks"
 
-def _td(endpoint: str, **params) -> dict | None:
-    """Call Twelvedata API. Returns parsed JSON or None on any failure."""
-    if not _TD_KEY:
+def _alpaca(path: str, **params) -> dict | None:
+    """Call Alpaca Data API v2. Returns parsed JSON or None on any failure."""
+    if not _ALPACA_KEY or not _ALPACA_SECRET:
         return None
     try:
         r = requests.get(
-            f"{_TD_BASE}/{endpoint}",
-            params={**params, "apikey": _TD_KEY},
+            f"{_ALPACA_BASE}/{path}",
+            params={"feed": "iex", **params},
+            headers={
+                "APCA-API-KEY-ID":     _ALPACA_KEY,
+                "APCA-API-SECRET-KEY": _ALPACA_SECRET,
+            },
             timeout=10,
         )
-        r.raise_for_status()
-        data = r.json()
-        # Twelvedata returns {"status": "error", "code": 400, "message": "..."}
-        if data.get("status") == "error" or "code" in data:
+        if r.status_code in (422, 404):   # symbol not supported on IEX
             return None
-        return data
+        r.raise_for_status()
+        return r.json()
     except Exception:
         return None
 
@@ -77,20 +80,28 @@ def fetch_price_history(ticker: str) -> pd.DataFrame | None:
 # Live price history (API endpoint)                                            #
 # --------------------------------------------------------------------------- #
 
-# Twelvedata interval/outputsize config per UI period
-_TD_PERIOD = {
-    "1D":  {"interval": "5min",   "outputsize": 78},
-    "5D":  {"interval": "1h",     "outputsize": 40},
-    "1M":  {"interval": "1day",   "outputsize": 30},
-    "6M":  {"interval": "1day",   "outputsize": 180},
-    "YTD": {"interval": "1day",   "outputsize": 90},
-    "1Y":  {"interval": "1week",  "outputsize": 52},
-    "5Y":  {"interval": "1month", "outputsize": 60},
-    "All": {"interval": "1month", "outputsize": 240},
-}
+# Alpaca timeframe + lookback per UI period
+def _alpaca_period_params(ui_period: str) -> dict:
+    now   = datetime.utcnow()
+    start = {
+        "1D":  now - timedelta(days=2),
+        "5D":  now - timedelta(days=7),
+        "1M":  now - timedelta(days=32),
+        "6M":  now - timedelta(days=185),
+        "YTD": datetime(now.year, 1, 1),
+        "1Y":  now - timedelta(days=370),
+        "5Y":  now - timedelta(days=365 * 5 + 2),
+        "All": datetime(2010, 1, 1),
+    }.get(ui_period, now - timedelta(days=32))
+    tf = {
+        "1D": "5Min", "5D": "1Hour",
+        "1M": "1Day", "6M": "1Day",  "YTD": "1Day",
+        "1Y": "1Week", "5Y": "1Month", "All": "1Month",
+    }.get(ui_period, "1Day")
+    return {"timeframe": tf, "start": start.strftime("%Y-%m-%dT%H:%M:%SZ"), "limit": 500, "sort": "asc"}
 
-# yfinance fallback config
-PERIOD_MAP = {
+# yfinance fallback config (local dev)
+_YF_PERIOD = {
     "1D":  {"period": "1d",  "interval": "5m"},
     "5D":  {"period": "5d",  "interval": "15m"},
     "1M":  {"period": "1mo", "interval": "1d"},
@@ -104,27 +115,25 @@ PERIOD_MAP = {
 
 def fetch_ohlcv(ticker: str, ui_period: str) -> dict | None:
     """
-    Fetch live OHLCV. Tries Twelvedata first (reliable from cloud IPs),
+    Fetch live OHLCV. Tries Alpaca first (reliable from cloud IPs),
     falls back to yfinance for local dev.
     """
-    # ── Twelvedata (primary on Render) ──────────────────────────────────────
-    td_cfg = _TD_PERIOD.get(ui_period, _TD_PERIOD["1M"])
-    td = _td("time_series", symbol=ticker, **td_cfg)
-    if td and td.get("values"):
-        values = list(reversed(td["values"]))   # newest-first → oldest-first
+    # ── Alpaca (primary on Render) ───────────────────────────────────────────
+    params = _alpaca_period_params(ui_period)
+    data   = _alpaca(f"{ticker}/bars", **params)
+    if data and data.get("bars"):
         rows = []
-        for v in values:
-            close = _safe_float(v.get("close"))
+        for bar in data["bars"]:
+            close = _safe_float(bar.get("c"))
             if close is None:
                 continue
-            dt = v.get("datetime", "")
             rows.append({
-                "date":   dt + "T00:00:00Z" if len(dt) == 10 else dt + "Z",
+                "date":   bar["t"],
                 "close":  round(close, 4),
-                "open":   round(_safe_float(v.get("open"))  or close, 4),
-                "high":   round(_safe_float(v.get("high"))  or close, 4),
-                "low":    round(_safe_float(v.get("low"))   or close, 4),
-                "volume": int(float(v["volume"])) if v.get("volume") else None,
+                "open":   round(_safe_float(bar.get("o")) or close, 4),
+                "high":   round(_safe_float(bar.get("h")) or close, 4),
+                "low":    round(_safe_float(bar.get("l")) or close, 4),
+                "volume": int(bar["v"]) if bar.get("v") else None,
             })
         if len(rows) >= 2:
             first, last = rows[0]["close"], rows[-1]["close"]
@@ -137,7 +146,7 @@ def fetch_ohlcv(ticker: str, ui_period: str) -> dict | None:
             }
 
     # ── yfinance fallback (local dev) ────────────────────────────────────────
-    yf_cfg = PERIOD_MAP.get(ui_period, PERIOD_MAP["1M"])
+    yf_cfg = _YF_PERIOD.get(ui_period, _YF_PERIOD["1M"])
     try:
         t    = yf.Ticker(ticker)
         hist = t.history(period=yf_cfg["period"], interval=yf_cfg["interval"], auto_adjust=True)
@@ -311,26 +320,27 @@ def fetch_sentiment(ticker: str, news_api_key: str) -> float | None:
 
 def fetch_live_quote(ticker: str) -> dict | None:
     """
-    Live quote. Tries Twelvedata first, falls back to yfinance for local dev.
+    Live quote. Tries Alpaca snapshot first, falls back to yfinance for local dev.
     """
-    # ── Twelvedata (primary on Render) ──────────────────────────────────────
-    td = _td("quote", symbol=ticker)
-    if td and td.get("close"):
-        close      = _safe_float(td.get("close"))
-        prev_close = _safe_float(td.get("previous_close"))
-        pct        = _safe_float(td.get("percent_change"))
-        fw52       = td.get("fifty_two_week", {})
+    # ── Alpaca snapshot (primary on Render) ─────────────────────────────────
+    snap = _alpaca(f"{ticker}/snapshot")
+    if snap:
+        daily  = snap.get("dailyBar")    or {}
+        prev   = snap.get("prevDailyBar") or {}
+        trade  = snap.get("latestTrade")  or {}
+        price  = _safe_float(trade.get("p")) or _safe_float(daily.get("c"))
+        prev_c = _safe_float(prev.get("c"))
+        pct    = round((price - prev_c) / prev_c * 100, 2) if price and prev_c else None
         return {
             "ticker":          ticker,
-            "price":           close,
+            "price":           price,
             "day_change_pct":  pct,
-            "day_low":         _safe_float(td.get("low")),
-            "day_high":        _safe_float(td.get("high")),
-            "week_52_low":     _safe_float(fw52.get("low")),
-            "week_52_high":    _safe_float(fw52.get("high")),
-            "volume":          _safe_float(td.get("volume")),
-            "avg_volume":      _safe_float(td.get("average_volume")),
-            # Fundamentals not in Twelvedata free quote — fall back to Snowflake
+            "day_low":         _safe_float(daily.get("l")),
+            "day_high":        _safe_float(daily.get("h")),
+            "week_52_low":     None,   # not in snapshot — falls back to Snowflake
+            "week_52_high":    None,
+            "volume":          _safe_float(daily.get("v")),
+            "avg_volume":      None,
             "market_cap":      None,
             "pe_ratio":        None,
             "eps":             None,
@@ -389,51 +399,30 @@ def fetch_live_quote(ticker: str) -> dict | None:
 
 def fetch_news_articles(ticker: str, _company_name: str = "", _news_api_key: str = "") -> list[dict]:
     """
-    Fetch top 4 news articles. Tries Twelvedata first, falls back to yfinance.
+    Fetch up to 4 news articles via Google News RSS — no API key, no IP restrictions.
+    Same source used by the Vercel serverless function in production.
     """
-    # ── Twelvedata (primary on Render) ──────────────────────────────────────
-    td = _td("news", symbol=ticker, outputsize=4)
-    if td and isinstance(td, list) and len(td) > 0:
-        result = []
-        for item in td[:4]:
-            title = (item.get("title") or "").strip()
-            if not title:
-                continue
-            result.append({
-                "title":        title[:140],
-                "source":       item.get("source", ""),
-                "url":          item.get("url", ""),
-                "published_at": item.get("datetime", ""),
-                "sentiment":    round(TextBlob(title).sentiment.polarity, 3),
-            })
-        if result:
-            return result
-
-    # ── yfinance fallback (local dev) ────────────────────────────────────────
+    import xml.etree.ElementTree as ET
+    query = requests.utils.quote(ticker + " stock")
+    url   = f"https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en"
     try:
-        t   = yf.Ticker(ticker)
-        raw = t.news or []
+        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        r.raise_for_status()
+        root   = ET.fromstring(r.text)
         result = []
-        for item in raw:
-            content = item.get("content") or item
-            title = (content.get("title") or "").strip()
+        for item in root.findall(".//item"):
+            title   = (item.findtext("title") or "").strip()
+            link    = item.findtext("link") or ""
+            pubdate = item.findtext("pubDate") or ""
+            src_el  = item.find("source")
+            source  = src_el.text if src_el is not None else "Google News"
             if not title:
                 continue
-            url = (
-                (content.get("canonicalUrl") or {}).get("url")
-                or (content.get("clickThroughUrl") or {}).get("url")
-                or content.get("link", "")
-            )
-            source = (
-                (content.get("provider") or {}).get("displayName")
-                or content.get("publisher", "")
-            )
-            pub_date = content.get("pubDate") or content.get("providerPublishTime")
             result.append({
                 "title":        title[:140],
                 "source":       source,
-                "url":          url,
-                "published_at": pub_date,
+                "url":          link,
+                "published_at": pubdate,
                 "sentiment":    round(TextBlob(title).sentiment.polarity, 3),
             })
             if len(result) == 4:

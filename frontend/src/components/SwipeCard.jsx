@@ -1,9 +1,10 @@
-import { useRef, useState, useEffect } from 'react'
+import { useRef, useState, useEffect, forwardRef, useImperativeHandle } from 'react'
 import {
   motion,
   useMotionValue,
   useTransform,
   useAnimation,
+  animate,
 } from 'framer-motion'
 import StockChart from './StockChart'
 import { getStockQuote } from '../api/client'
@@ -90,7 +91,7 @@ function FlipBtn({ flipped, onClick }) {
   )
 }
 
-export default function SwipeCard({ stock, onSwipe, style = {}, isTop }) {
+const SwipeCard = forwardRef(function SwipeCard({ stock, onSwipe, style = {}, isTop }, ref) {
   const dragX    = useMotionValue(0)
   const controls = useAnimation()
   const hasFired = useRef(false)
@@ -132,6 +133,23 @@ export default function SwipeCard({ stock, onSwipe, style = {}, isTop }) {
   const passOpacity = useTransform(dragX, [-SWIPE_THRESHOLD, 0], [1, 0])
   const likeStamp   = useTransform(dragX, [20, SWIPE_THRESHOLD], [0, 1])
   const passStamp   = useTransform(dragX, [-SWIPE_THRESHOLD, -20], [1, 0])
+
+  // Exposed to SwipeStack so keyboard events can trigger the full animation
+  useImperativeHandle(ref, () => ({
+    async triggerSwipe(direction) {
+      if (hasFired.current || flipped) return
+      hasFired.current = true
+      const target = direction === 'right' ? 620 : -620
+      // Animate dragX — drives rotation, tint overlays, like/pass stamps.
+      // Tween (not spring) so await resolves the moment the card is off-screen,
+      // with no spring-settling lag.
+      await animate(dragX, target, {
+        duration: 0.32,
+        ease: [0.4, 0, 0.9, 1],
+      })
+      onSwipe(direction)
+    },
+  }))
 
   async function handleDragEnd(_, info) {
     if (hasFired.current || flipped) return
@@ -262,11 +280,6 @@ export default function SwipeCard({ stock, onSwipe, style = {}, isTop }) {
               </div>
             </div>
 
-            {/* Reason */}
-            <div className="px-4 pb-3 flex-shrink-0">
-              <p className="text-[10px] italic text-slate-500 text-center">✦ {stock.reason}</p>
-            </div>
-
             <FlipBtn flipped={false} onClick={handleFlip} />
           </div>
 
@@ -299,7 +312,9 @@ export default function SwipeCard({ stock, onSwipe, style = {}, isTop }) {
       </motion.div>
     </motion.div>
   )
-}
+})
+
+export default SwipeCard
 
 // ── Back face content (lazy-loads news when flipped) ───────────────────────
 import { getStockNews } from '../api/client'
@@ -318,9 +333,11 @@ function BackContent({ stock }) {
 
   return (
     <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4" style={{ touchAction: 'pan-y' }}>
-      {/* Description */}
+      {/* Description — capped at 2 sentences */}
       {stock.description ? (
-        <p className="text-xs text-slate-300 leading-relaxed">{stock.description}</p>
+        <p className="text-xs text-slate-300 leading-relaxed">
+          {stock.description.match(/[^.!?]+[.!?]+/g)?.slice(0, 2).join(' ') ?? stock.description}
+        </p>
       ) : (
         <p className="text-xs text-slate-500 italic">No company description available.</p>
       )}
