@@ -65,6 +65,7 @@ export default async function handler(req, res) {
     })
   } catch (err) {
     console.error('quote error', sym, err.message)
-    res.status(500).json({ error: err.message })
+    // Return partial data rather than error — frontend will show what it has
+    res.json({ ticker: sym, price: null, day_change_pct: null })
   }
 }
