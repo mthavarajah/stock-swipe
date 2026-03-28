@@ -1,26 +1,34 @@
 import axios from 'axios'
 
-const api = axios.create({
+// ML endpoints — FastAPI on Render
+const ml = axios.create({
   baseURL: import.meta.env.VITE_API_URL || 'http://localhost:8000',
 })
 
+// Market data endpoints — Vercel serverless (same origin, no cold start)
+const data = axios.create({
+  baseURL: import.meta.env.VITE_DATA_URL || '',
+})
+
+// ── ML endpoints (Render) ────────────────────────────────────────────────────
 export const onboard = (answers) =>
-  api.post('/onboard', answers)
+  ml.post('/onboard', answers)
 
 export const swipe = (userId, ticker, direction) =>
-  api.post('/swipe', { user_id: userId, ticker, direction })
+  ml.post('/swipe', { user_id: userId, ticker, direction })
 
 export const nextBatch = (userId) =>
-  api.get(`/next-batch?user_id=${userId}`)
+  ml.get(`/next-batch?user_id=${userId}`)
 
 export const getPlaylist = (userId) =>
-  api.get(`/playlist?user_id=${userId}`)
+  ml.get(`/playlist?user_id=${userId}`)
 
+// ── Market data endpoints (Vercel) ───────────────────────────────────────────
 export const getStockHistory = (ticker, period = '1M') =>
-  api.get(`/stock/${ticker}/history?period=${period}`)
+  data.get(`/api/history?ticker=${ticker}&period=${period}`)
 
 export const getStockQuote = (ticker) =>
-  api.get(`/stock/${ticker}/quote`)
+  data.get(`/api/quote?ticker=${ticker}`)
 
 export const getStockNews = (ticker) =>
-  api.get(`/stock/${ticker}/news`)
+  data.get(`/api/news?ticker=${ticker}`)
