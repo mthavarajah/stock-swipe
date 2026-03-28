@@ -1,72 +1,56 @@
-import yf from 'yahoo-finance2'
-const yahooFinance = yf.default ?? yf
-
+// Yahoo Finance v8 chart API — no crumb/auth needed
 export default async function handler(req, res) {
   const { ticker } = req.query
   if (!ticker) return res.status(400).json({ error: 'ticker required' })
 
   const sym = ticker.toUpperCase()
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?range=1d&interval=1m&includePrePost=false`
 
   try {
-    // quote() is lightweight and reliable — covers all price/fundamentals fields
-    const q = await yahooFinance.quote(sym, {}, { validateResult: false })
+    const r = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json',
+      },
+    })
 
-    // Fetch description separately — non-fatal if it fails
-    let description = null
-    try {
-      const profile = await yahooFinance.quoteSummary(sym, {
-        modules: ['assetProfile'],
-        validateResult: false,
-      })
-      description = profile?.assetProfile?.longBusinessSummary ?? null
-    } catch (_) {}
+    if (!r.ok) {
+      console.error('quote fetch failed', sym, r.status)
+      return res.json({ ticker: sym, price: null, day_change_pct: null })
+    }
 
-    // Upcoming earnings date
-    let earningsDate = null
-    try {
-      const cal = await yahooFinance.quoteSummary(sym, {
-        modules: ['calendarEvents'],
-        validateResult: false,
-      })
-      const today = new Date()
-      for (const ed of (cal?.calendarEvents?.earnings?.earningsDate ?? [])) {
-        const d = ed instanceof Date ? ed : new Date(ed)
-        if (d >= today) {
-          earningsDate = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
-          break
-        }
-      }
-    } catch (_) {}
+    const json = await r.json()
+    const meta = json?.chart?.result?.[0]?.meta ?? {}
 
-    const currentPrice = q.regularMarketPrice
-    const prevClose    = q.regularMarketPreviousClose
+    const currentPrice = meta.regularMarketPrice ?? null
+    const prevClose    = meta.previousClose ?? meta.chartPreviousClose ?? null
     const dayChangePct = currentPrice != null && prevClose
       ? parseFloat(((currentPrice - prevClose) / prevClose * 100).toFixed(2))
       : null
 
-    res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate')
+    res.setHeader('Cache-Control', 's-maxage=60, stale-while-revalidate')
     res.json({
-      ticker:           sym,
-      price:            currentPrice             ?? null,
-      day_change_pct:   dayChangePct,
-      day_low:          q.regularMarketDayLow    ?? null,
-      day_high:         q.regularMarketDayHigh   ?? null,
-      week_52_low:      q.fiftyTwoWeekLow        ?? null,
-      week_52_high:     q.fiftyTwoWeekHigh       ?? null,
-      volume:           q.regularMarketVolume    ?? null,
-      avg_volume:       q.averageDailyVolume3Month ?? null,
-      market_cap:       q.marketCap              ?? null,
-      pe_ratio:         q.trailingPE ?? q.forwardPE ?? null,
-      eps:              q.epsTrailingTwelveMonths ?? null,
-      market_beta:      q.beta                   ?? null,
-      dividend_yield:   q.dividendYield          ?? null,
-      forward_dividend: q.dividendRate           ?? null,
-      earnings_date:    earningsDate,
-      description:      description,
+      ticker:          sym,
+      price:           currentPrice,
+      day_change_pct:  dayChangePct,
+      day_low:         meta.regularMarketDayLow    ?? null,
+      day_high:        meta.regularMarketDayHigh   ?? null,
+      week_52_low:     meta.fiftyTwoWeekLow        ?? null,
+      week_52_high:    meta.fiftyTwoWeekHigh       ?? null,
+      volume:          meta.regularMarketVolume    ?? null,
+      // Fields below are not in the chart API — frontend falls back to Snowflake snapshot
+      avg_volume:      null,
+      market_cap:      null,
+      pe_ratio:        null,
+      eps:             null,
+      market_beta:     null,
+      dividend_yield:  null,
+      forward_dividend: null,
+      earnings_date:   null,
+      description:     null,
     })
   } catch (err) {
     console.error('quote error', sym, err.message)
-    // Return partial data rather than error — frontend will show what it has
     res.json({ ticker: sym, price: null, day_change_pct: null })
   }
 }

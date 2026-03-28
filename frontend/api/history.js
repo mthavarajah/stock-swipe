@@ -1,21 +1,13 @@
-import yf from 'yahoo-finance2'
-const yahooFinance = yf.default ?? yf
-
-// For intraday (1D/5D) we must use chart(); for everything else historical() is more reliable
+// Yahoo Finance v8 chart API — no crumb/auth needed
 const CONFIGS = {
-  '1D':  { useChart: true,  interval: '5m',   daysBack: 1 },
-  '5D':  { useChart: true,  interval: '60m',  daysBack: 5 },
-  '1M':  { useChart: false, interval: '1d',   daysBack: 30 },
-  '6M':  { useChart: false, interval: '1d',   daysBack: 180 },
-  'YTD': { useChart: false, interval: '1d',   ytd: true },
-  '1Y':  { useChart: false, interval: '1wk',  daysBack: 365 },
-  '5Y':  { useChart: false, interval: '1mo',  daysBack: 365 * 5 },
-  'All': { useChart: false, interval: '1mo',  daysBack: 365 * 20 },
-}
-
-function getPeriod1(config) {
-  if (config.ytd) return new Date(new Date().getFullYear(), 0, 1)
-  return new Date(Date.now() - config.daysBack * 24 * 60 * 60 * 1000)
+  '1D':  { range: '1d',   interval: '5m'  },
+  '5D':  { range: '5d',   interval: '60m' },
+  '1M':  { range: '1mo',  interval: '1d'  },
+  '6M':  { range: '6mo',  interval: '1d'  },
+  'YTD': { range: 'ytd',  interval: '1d'  },
+  '1Y':  { range: '1y',   interval: '1wk' },
+  '5Y':  { range: '5y',   interval: '1mo' },
+  'All': { range: 'max',  interval: '3mo' },
 }
 
 export default async function handler(req, res) {
@@ -24,49 +16,42 @@ export default async function handler(req, res) {
 
   const sym    = ticker.toUpperCase()
   const config = CONFIGS[period] ?? CONFIGS['1M']
-  const period1 = getPeriod1(config)
+  const url    = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?range=${config.range}&interval=${config.interval}&includePrePost=false`
 
   try {
-    let rows = []
+    const r = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json',
+      },
+    })
 
-    if (config.useChart) {
-      // Intraday — use chart()
-      const result = await yahooFinance.chart(sym, {
-        period1,
-        interval: config.interval,
-      }, { validateResult: false })
+    if (!r.ok) {
+      console.error('history fetch failed', sym, period, r.status)
+      return res.json({ ticker: sym, period, change_pct: 0, change_abs: 0, data: [] })
+    }
 
-      rows = (result?.quotes ?? [])
-        .filter(q => q.close != null)
-        .map(q => ({
-          date:   q.date instanceof Date ? q.date.toISOString() : String(q.date),
-          close:  parseFloat(Number(q.close).toFixed(4)),
-          open:   q.open   != null ? parseFloat(Number(q.open).toFixed(4))   : null,
-          high:   q.high   != null ? parseFloat(Number(q.high).toFixed(4))   : null,
-          low:    q.low    != null ? parseFloat(Number(q.low).toFixed(4))    : null,
-          volume: q.volume ?? null,
-        }))
-    } else {
-      // Daily/weekly/monthly — use historical() which is more reliable
-      const result = await yahooFinance.historical(sym, {
-        period1,
-        interval: config.interval,
-      }, { validateResult: false })
+    const json      = await r.json()
+    const result    = json?.chart?.result?.[0]
+    const timestamps = result?.timestamp ?? []
+    const quotes    = result?.indicators?.quote?.[0] ?? {}
+    const adjclose  = result?.indicators?.adjclose?.[0]?.adjclose ?? []
 
-      rows = (Array.isArray(result) ? result : [])
-        .filter(q => q.close != null || q.adjClose != null)
-        .map(q => ({
-          date:   q.date instanceof Date ? q.date.toISOString() : String(q.date),
-          close:  parseFloat(Number(q.adjClose ?? q.close).toFixed(4)),
-          open:   q.open   != null ? parseFloat(Number(q.open).toFixed(4))   : null,
-          high:   q.high   != null ? parseFloat(Number(q.high).toFixed(4))   : null,
-          low:    q.low    != null ? parseFloat(Number(q.low).toFixed(4))    : null,
-          volume: q.volume ?? null,
-        }))
+    const rows = []
+    for (let i = 0; i < timestamps.length; i++) {
+      const close = adjclose[i] ?? quotes.close?.[i]
+      if (close == null || isNaN(close)) continue
+      rows.push({
+        date:   new Date(timestamps[i] * 1000).toISOString(),
+        close:  parseFloat(close.toFixed(4)),
+        open:   quotes.open?.[i]   != null ? parseFloat(quotes.open[i].toFixed(4))   : null,
+        high:   quotes.high?.[i]   != null ? parseFloat(quotes.high[i].toFixed(4))   : null,
+        low:    quotes.low?.[i]    != null ? parseFloat(quotes.low[i].toFixed(4))    : null,
+        volume: quotes.volume?.[i] ?? null,
+      })
     }
 
     if (rows.length < 2) {
-      // Return empty data rather than 404 — lets frontend show "No data" not an error
       return res.json({ ticker: sym, period, change_pct: 0, change_abs: 0, data: [] })
     }
 
@@ -84,7 +69,6 @@ export default async function handler(req, res) {
     })
   } catch (err) {
     console.error('history error', sym, period, err.message)
-    // Return empty rather than error so frontend shows "No data" gracefully
     res.json({ ticker: sym, period, change_pct: 0, change_abs: 0, data: [] })
   }
 }
