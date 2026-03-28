@@ -7,63 +7,64 @@ export default async function handler(req, res) {
   const sym = ticker.toUpperCase()
 
   try {
-    const [summary, search] = await Promise.allSettled([
-      yahooFinance.quoteSummary(sym, {
-        modules: ['price', 'summaryDetail', 'defaultKeyStatistics', 'assetProfile', 'calendarEvents'],
+    // quote() is lightweight and reliable — covers all price/fundamentals fields
+    const q = await yahooFinance.quote(sym, {}, { validateResult: false })
+
+    // Fetch description separately — non-fatal if it fails
+    let description = null
+    try {
+      const profile = await yahooFinance.quoteSummary(sym, {
+        modules: ['assetProfile'],
         validateResult: false,
-      }),
-      yahooFinance.search(sym, { quotesCount: 1, newsCount: 0 }),
-    ])
+      })
+      description = profile?.assetProfile?.longBusinessSummary ?? null
+    } catch (_) {}
 
-    const s   = summary.status === 'fulfilled' ? summary.value : {}
-    const price   = s.price            ?? {}
-    const detail  = s.summaryDetail    ?? {}
-    const stats   = s.defaultKeyStatistics ?? {}
-    const profile = s.assetProfile     ?? {}
-    const cal     = s.calendarEvents   ?? {}
-
-    // Upcoming earnings date only
+    // Upcoming earnings date
     let earningsDate = null
-    const today = new Date()
-    for (const ed of (cal.earnings?.earningsDate ?? [])) {
-      const d = ed instanceof Date ? ed : new Date(ed)
-      if (d >= today) {
-        earningsDate = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
-        break
+    try {
+      const cal = await yahooFinance.quoteSummary(sym, {
+        modules: ['calendarEvents'],
+        validateResult: false,
+      })
+      const today = new Date()
+      for (const ed of (cal?.calendarEvents?.earnings?.earningsDate ?? [])) {
+        const d = ed instanceof Date ? ed : new Date(ed)
+        if (d >= today) {
+          earningsDate = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+          break
+        }
       }
-    }
+    } catch (_) {}
 
-    const currentPrice = price.regularMarketPrice
-    const prevClose    = price.regularMarketPreviousClose
+    const currentPrice = q.regularMarketPrice
+    const prevClose    = q.regularMarketPreviousClose
     const dayChangePct = currentPrice != null && prevClose
       ? parseFloat(((currentPrice - prevClose) / prevClose * 100).toFixed(2))
       : null
 
-    // Normalise dividend yield — yfinance sometimes returns decimal (0.056) sometimes pct (5.6)
-    const rawDy = detail.dividendYield ?? detail.trailingAnnualDividendYield ?? null
-
     res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate')
     res.json({
-      ticker: sym,
-      price:            currentPrice ?? null,
+      ticker:           sym,
+      price:            currentPrice             ?? null,
       day_change_pct:   dayChangePct,
-      day_low:          price.regularMarketDayLow          ?? null,
-      day_high:         price.regularMarketDayHigh         ?? null,
-      week_52_low:      detail.fiftyTwoWeekLow             ?? null,
-      week_52_high:     detail.fiftyTwoWeekHigh            ?? null,
-      volume:           price.regularMarketVolume          ?? null,
-      avg_volume:       detail.averageVolume               ?? null,
-      market_cap:       price.marketCap                    ?? null,
-      pe_ratio:         detail.trailingPE ?? detail.forwardPE ?? null,
-      eps:              stats.trailingEps                  ?? null,
-      market_beta:      detail.beta                        ?? null,
-      dividend_yield:   rawDy,
-      forward_dividend: detail.dividendRate                ?? null,
+      day_low:          q.regularMarketDayLow    ?? null,
+      day_high:         q.regularMarketDayHigh   ?? null,
+      week_52_low:      q.fiftyTwoWeekLow        ?? null,
+      week_52_high:     q.fiftyTwoWeekHigh       ?? null,
+      volume:           q.regularMarketVolume    ?? null,
+      avg_volume:       q.averageDailyVolume3Month ?? null,
+      market_cap:       q.marketCap              ?? null,
+      pe_ratio:         q.trailingPE ?? q.forwardPE ?? null,
+      eps:              q.epsTrailingTwelveMonths ?? null,
+      market_beta:      q.beta                   ?? null,
+      dividend_yield:   q.dividendYield          ?? null,
+      forward_dividend: q.dividendRate           ?? null,
       earnings_date:    earningsDate,
-      description:      profile.longBusinessSummary        ?? null,
+      description:      description,
     })
   } catch (err) {
     console.error('quote error', sym, err.message)
-    res.status(500).json({ error: 'Failed to fetch quote' })
+    res.status(500).json({ error: err.message })
   }
 }
