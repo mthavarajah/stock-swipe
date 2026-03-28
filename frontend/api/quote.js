@@ -1,4 +1,5 @@
-import yahooFinance from 'yahoo-finance2'
+import yf from 'yahoo-finance2'
+const yahooFinance = yf.default ?? yf
 
 export default async function handler(req, res) {
   const { ticker } = req.query

@@ -1,4 +1,5 @@
-import yahooFinance from 'yahoo-finance2'
+import yf from 'yahoo-finance2'
+const yahooFinance = yf.default ?? yf
 
 // For intraday (1D/5D) we must use chart(); for everything else historical() is more reliable
 const CONFIGS = {

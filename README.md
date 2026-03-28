@@ -21,12 +21,23 @@ score = (1 − ε) × cosine_similarity(you, stock)
 
 | Layer      | Technology                                         |
 |------------|----------------------------------------------------|
-| Data       | yfinance, NewsAPI, TextBlob                        |
-| Database   | Snowflake (free trial)                             |
+| Data       | yfinance, TextBlob                                 |
+| Database   | Snowflake                                          |
 | ML         | numpy, scikit-learn, scipy                         |
 | Backend    | FastAPI, Python 3.11, snowflake-connector-python   |
 | Frontend   | React 18, Vite, Framer Motion, Recharts, Tailwind  |
-| Deploy     | Railway (backend), Vercel (frontend)               |
+| Deploy     | Render (backend ML), Vercel (frontend + market data) |
+
+### Architecture
+
+```
+Browser
+  ├── /api/quote, /api/history, /api/news  →  Vercel serverless (yahoo-finance2)
+  └── /onboard, /swipe, /next-batch        →  Render (FastAPI + Snowflake ML)
+```
+
+Market data (charts, live quotes, news) runs on Vercel's edge — no cold starts.
+ML scoring and user profiles run on Render backed by Snowflake.
 
 ---
 
@@ -36,8 +47,8 @@ score = (1 − ε) × cosine_similarity(you, stock)
 
 - Python 3.11+
 - Node 18+
-- A Snowflake free-trial account
-- A NewsAPI key (free tier)
+- A Snowflake account
+- A Render account (for deployment)
 
 ### 1 — Snowflake setup
 
@@ -51,10 +62,10 @@ cd backend
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-cp .env.example .env   # fill in your credentials
+cp .env.example .env   # fill in your Snowflake credentials
 ```
 
-Seed the database (runs once, ~10–15 min for all S&P 500 tickers):
+Seed the database (runs once, ~15–20 min for 100 tickers):
 
 ```bash
 python -m data.pipeline
@@ -73,44 +84,37 @@ uvicorn main:app --reload --port 8000
 cd frontend
 npm install
 
-cp .env.example .env.local
-# Set: VITE_API_URL=http://localhost:8000
+# Create .env.local with:
+# VITE_API_URL=http://localhost:8000
 
 npm run dev
 # App at http://localhost:5173
 ```
 
+The Vite dev server proxies `/api/history`, `/api/quote`, `/api/news` to the local
+FastAPI backend automatically — no extra setup needed.
+
 ---
 
 ## Deployment
 
-### Backend → Railway
+### Backend → Render
 
-```bash
-cd backend
-railway login
-railway init
-railway up
-```
-
-Set env vars in the Railway dashboard (see `backend/.env.example`), then seed:
-
-```bash
-railway run python data/pipeline.py
-```
+1. Go to [render.com](https://render.com) → New Web Service → connect GitHub repo
+2. Set **Root Directory** to `backend`
+3. Runtime: **Docker** (picks up `backend/Dockerfile` automatically)
+4. Add environment variables (all `SNOWFLAKE_*` keys from `.env.example`)
+5. Deploy → copy the service URL
 
 ### Frontend → Vercel
 
-```bash
-cd frontend
-vercel
-```
-
-Set `VITE_API_URL=https://your-railway-url.up.railway.app` in the Vercel dashboard, then:
-
-```bash
-vercel --prod
-```
+1. Go to [vercel.com](https://vercel.com) → New Project → import repo
+2. Set **Root Directory** to `frontend`
+3. Add environment variable:
+   ```
+   VITE_API_URL=https://your-app.onrender.com
+   ```
+4. Deploy — Vercel automatically serves `frontend/api/*.js` as serverless functions
 
 ---
 
@@ -119,22 +123,26 @@ vercel --prod
 ```
 stock-swipe/
 ├── backend/
-│   ├── main.py              # FastAPI app — 4 endpoints
+│   ├── main.py              # FastAPI app — ML endpoints only
 │   ├── model/
 │   │   ├── vectors.py       # cosine similarity + user vector updates
 │   │   ├── bandit.py        # Thompson Sampling
 │   │   └── scorer.py        # hybrid combiner + batch generator
 │   ├── data/
-│   │   ├── fetch.py         # yfinance + NewsAPI fetcher
+│   │   ├── fetch.py         # yfinance fetcher
 │   │   ├── features.py      # 6-dim feature engineering + normalisation
 │   │   └── pipeline.py      # orchestrator — run to seed Snowflake
 │   └── db/
 │       ├── snowflake.py     # connection + query helpers
 │       └── schema.sql       # STOCKS, USERS, SWIPES tables
 └── frontend/
+    ├── api/
+    │   ├── quote.js         # Vercel serverless — live quote via yahoo-finance2
+    │   ├── history.js       # Vercel serverless — OHLCV chart data
+    │   └── news.js          # Vercel serverless — news + sentiment
     └── src/
-        ├── components/      # SwipeCard, SwipeStack, ConvergenceBar, …
-        ├── pages/           # Onboard, Swipe, Playlist
-        ├── api/client.js    # axios wrapper
+        ├── components/      # SwipeCard, SwipeStack, ConvergenceBar, IndexChart, …
+        ├── pages/           # Onboard, Swipe, Portfolio, Index
+        ├── api/client.js    # axios wrapper — routes ML to Render, data to Vercel
         └── store/           # zustand session store
 ```

@@ -65,34 +65,21 @@ PERIOD_MAP = {
 def fetch_ohlcv(ticker: str, ui_period: str) -> dict | None:
     """
     Fetch live OHLCV for a ticker and UI period label.
+    Uses Ticker.history() to avoid MultiIndex issues with yf.download().
     Returns the response dict or None on failure.
     """
     params = PERIOD_MAP.get(ui_period, PERIOD_MAP["1M"])
     try:
-        hist = yf.download(
-            ticker,
+        t = yf.Ticker(ticker)
+        hist = t.history(
             period=params["period"],
             interval=params["interval"],
-            progress=False,
             auto_adjust=True,
         )
-        if hist.empty:
+        if hist is None or hist.empty:
             return None
 
-        # Flatten MultiIndex columns — yfinance 0.2.x may return
-        # MultiIndex([('Close','AAPL'), ('High','AAPL'), ...])
-        if isinstance(hist.columns, pd.MultiIndex):
-            # Use the level that contains the OHLCV field names
-            for level in range(hist.columns.nlevels):
-                vals = hist.columns.get_level_values(level).tolist()
-                if "Close" in vals or "close" in vals:
-                    hist.columns = vals
-                    break
-            else:
-                # Fallback: just take level 0
-                hist.columns = hist.columns.get_level_values(0)
-
-        # Normalise to lowercase so both 'Close' and 'close' work
+        # Ticker.history() always returns flat columns — no MultiIndex
         hist.columns = [str(c).lower() for c in hist.columns]
 
         rows = []
@@ -107,7 +94,6 @@ def fetch_ohlcv(ticker: str, ui_period: str) -> dict | None:
                 "volume": _safe_float(row.get("volume")),
             })
 
-        # Filter out rows where close is None
         rows = [r for r in rows if r["close"] is not None]
 
         if len(rows) < 2:
@@ -125,7 +111,7 @@ def fetch_ohlcv(ticker: str, ui_period: str) -> dict | None:
             "change_abs": round(change_abs, 2),
             "data":       rows,
         }
-    except Exception as e:
+    except Exception:
         import traceback
         traceback.print_exc()
         return None

@@ -1,4 +1,5 @@
-import yahooFinance from 'yahoo-finance2'
+import yf from 'yahoo-finance2'
+const yahooFinance = yf.default ?? yf
 
 // Lightweight keyword sentiment — avoids adding an npm dep just for this
 function sentiment(text) {
@@ -23,8 +24,7 @@ export default async function handler(req, res) {
     const result = await yahooFinance.search(sym, {
       newsCount:   4,
       quotesCount: 0,
-      validateResult: false,
-    })
+    }, { validateResult: false })
 
     const articles = (result.news ?? []).slice(0, 4).map(item => ({
       title:        item.title        ?? '',
