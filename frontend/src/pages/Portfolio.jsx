@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect, useRef } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useSession } from '../store/useSession'
@@ -196,9 +196,11 @@ function BottomSheet({ stock, onClose }) {
 
 // ── Main page ────────────────────────────────────────────────────────────────
 const SORT_OPTIONS = [
-  { key: 'match',  label: 'Match' },
-  { key: 'price',  label: 'Price' },
-  { key: 'sector', label: 'Sector' },
+  { key: 'match',     label: 'Match' },
+  { key: 'price',     label: 'Price' },
+  { key: 'market_cap',label: 'Mkt Cap' },
+  { key: 'pe',        label: 'P/E' },
+  { key: 'sector',    label: 'Sector' },
 ]
 
 export default function Portfolio() {
@@ -210,6 +212,21 @@ export default function Portfolio() {
 
   const [selectedStock, setSelectedStock]     = useState(null)
   const [selectedSectors, setSelectedSectors] = useState(new Set())
+  const [sortAsc, setSortAsc]                 = useState(false)
+  const initialised = useRef(false)
+
+  // Default to the most common sector on first load
+  useEffect(() => {
+    if (initialised.current || portfolio.length === 0) return
+    const map = {}
+    for (const s of portfolio) {
+      const k = s.sector ?? 'Other'
+      map[k] = (map[k] ?? 0) + 1
+    }
+    const top = Object.entries(map).sort((a, b) => b[1] - a[1])[0]?.[0]
+    if (top) setSelectedSectors(new Set([top]))
+    initialised.current = true
+  }, [portfolio.length])
 
   if (!userId) {
     navigate('/onboard', { replace: true })
@@ -226,11 +243,14 @@ export default function Portfolio() {
 
   const sorted = useMemo(() => {
     const arr = [...portfolio]
-    if (sortBy === 'match')  arr.sort((a, b) => (b.match_pct ?? 0) - (a.match_pct ?? 0))
-    if (sortBy === 'price')  arr.sort((a, b) => (b.price ?? 0) - (a.price ?? 0))
-    if (sortBy === 'sector') arr.sort((a, b) => (a.sector ?? 'zzz').localeCompare(b.sector ?? 'zzz'))
+    const dir = sortAsc ? 1 : -1
+    if (sortBy === 'match')      arr.sort((a, b) => dir * ((a.match_pct ?? 0) - (b.match_pct ?? 0)))
+    if (sortBy === 'price')      arr.sort((a, b) => dir * ((a.price ?? 0) - (b.price ?? 0)))
+    if (sortBy === 'market_cap') arr.sort((a, b) => dir * ((a.market_cap ?? 0) - (b.market_cap ?? 0)))
+    if (sortBy === 'pe')         arr.sort((a, b) => dir * ((a.pe_ratio ?? 0) - (b.pe_ratio ?? 0)))
+    if (sortBy === 'sector')     arr.sort((a, b) => dir * (a.sector ?? 'zzz').localeCompare(b.sector ?? 'zzz'))
     return arr
-  }, [portfolio, sortBy])
+  }, [portfolio, sortBy, sortAsc])
 
   const visible = useMemo(
     () => selectedSectors.size === 0
@@ -262,20 +282,28 @@ export default function Portfolio() {
 
         {/* Sort controls */}
         {portfolio.length > 0 && (
-          <div className="flex gap-2">
-            {SORT_OPTIONS.map(({ key, label }) => (
-              <button
-                key={key}
-                onClick={() => setSortBy(key)}
-                className={`text-xs px-3 py-1 rounded-full font-medium transition-colors ${
-                  sortBy === key
-                    ? 'bg-purple-500 text-white'
-                    : 'bg-white/10 text-slate-400 hover:bg-white/20 hover:text-white'
-                }`}
-              >
-                {label}
-              </button>
-            ))}
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="flex gap-1.5 flex-wrap">
+              {SORT_OPTIONS.map(({ key, label }) => (
+                <button
+                  key={key}
+                  onClick={() => {
+                    if (sortBy === key) setSortAsc(a => !a)
+                    else { setSortBy(key); setSortAsc(false) }
+                  }}
+                  className={`text-xs px-2.5 py-1 rounded-full font-medium transition-colors flex items-center gap-1 ${
+                    sortBy === key
+                      ? 'bg-purple-500 text-white'
+                      : 'bg-white/10 text-slate-400 hover:bg-white/20 hover:text-white'
+                  }`}
+                >
+                  {label}
+                  {sortBy === key && (
+                    <span className="text-[10px] leading-none">{sortAsc ? '↑' : '↓'}</span>
+                  )}
+                </button>
+              ))}
+            </div>
           </div>
         )}
       </div>
