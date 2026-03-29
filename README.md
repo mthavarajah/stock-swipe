@@ -2,7 +2,7 @@
 
 A Tinder-style stock discovery app that learns your investment taste in real time.
 
-**[▶ Watch Demo Video](./demo/stock-swipe-demo-video.mov)**
+**[▶ Watch Demo Video](https://drive.google.com/file/d/1zZ-2eqzXgMkEpOIOMdO2fsTFbq7IpzDy/view?usp=sharing)**
 
 ---
 
