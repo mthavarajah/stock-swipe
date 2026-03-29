@@ -2,7 +2,7 @@
 
 A Tinder-style stock discovery app that learns your investment taste in real time.
 
-**[▶ Watch Demo Video](YOUR_DEMO_VIDEO_LINK_HERE)**
+**[▶ Watch Demo Video](./demo/stock-swipe-demo-video.mov)**
 
 ---
 
@@ -50,7 +50,7 @@ News is fetched from Google News RSS via a serverless function.
 - Python 3.11+
 - Node 18+
 - A Snowflake account
-- An Alpaca paper trading account (free) for market data
+- An Alpaca paper trading account for market data
 
 
 ### 1 — Snowflake setup
