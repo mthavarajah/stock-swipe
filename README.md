@@ -2,6 +2,8 @@
 
 A Tinder-style stock discovery app that learns your investment taste in real time.
 
+**[▶ Watch Demo Video](YOUR_DEMO_VIDEO_LINK_HERE)**
+
 ---
 
 ## How the ML works
@@ -21,23 +23,23 @@ score = (1 − ε) × cosine_similarity(you, stock)
 
 | Layer      | Technology                                         |
 |------------|----------------------------------------------------|
-| Data       | yfinance, TextBlob                                 |
+| Data       | yfinance, Alpaca Data API, TextBlob                |
 | Database   | Snowflake                                          |
 | ML         | numpy, scikit-learn, scipy                         |
 | Backend    | FastAPI, Python 3.11, snowflake-connector-python   |
 | Frontend   | React 18, Vite, Framer Motion, Recharts, Tailwind  |
-| Deploy     | Render (backend ML), Vercel (frontend + market data) |
-
 ### Architecture
 
 ```
 Browser
-  ├── /api/quote, /api/history, /api/news  →  Vercel serverless (yahoo-finance2)
-  └── /onboard, /swipe, /next-batch        →  Render (FastAPI + Snowflake ML)
+  ├── /api/news              →  Serverless function (Google News RSS)
+  └── /onboard, /swipe,
+      /next-batch, /stock/*  →  FastAPI backend (Snowflake + Alpaca)
 ```
 
-Market data (charts, live quotes, news) runs on Vercel's edge — no cold starts.
-ML scoring and user profiles run on Render backed by Snowflake.
+ML scoring and user profiles run on the backend backed by Snowflake.
+Chart and quote data is served via Alpaca's Data API (cloud IP-friendly).
+News is fetched from Google News RSS via a serverless function.
 
 ---
 
@@ -48,7 +50,8 @@ ML scoring and user profiles run on Render backed by Snowflake.
 - Python 3.11+
 - Node 18+
 - A Snowflake account
-- A Render account (for deployment)
+- An Alpaca paper trading account (free) for market data
+
 
 ### 1 — Snowflake setup
 
@@ -62,7 +65,7 @@ cd backend
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-cp .env.example .env   # fill in your Snowflake credentials
+cp .env.example .env   # fill in Snowflake + Alpaca credentials
 ```
 
 Seed the database (runs once, ~15–20 min for 100 tickers):
@@ -91,31 +94,6 @@ npm run dev
 # App at http://localhost:5173
 ```
 
-The Vite dev server proxies `/api/history`, `/api/quote`, `/api/news` to the local
-FastAPI backend automatically — no extra setup needed.
-
----
-
-## Deployment
-
-### Backend → Render
-
-1. Go to [render.com](https://render.com) → New Web Service → connect GitHub repo
-2. Set **Root Directory** to `backend`
-3. Runtime: **Docker** (picks up `backend/Dockerfile` automatically)
-4. Add environment variables (all `SNOWFLAKE_*` keys from `.env.example`)
-5. Deploy → copy the service URL
-
-### Frontend → Vercel
-
-1. Go to [vercel.com](https://vercel.com) → New Project → import repo
-2. Set **Root Directory** to `frontend`
-3. Add environment variable:
-   ```
-   VITE_API_URL=https://your-app.onrender.com
-   ```
-4. Deploy — Vercel automatically serves `frontend/api/*.js` as serverless functions
-
 ---
 
 ## Project structure
@@ -123,13 +101,13 @@ FastAPI backend automatically — no extra setup needed.
 ```
 stock-swipe/
 ├── backend/
-│   ├── main.py              # FastAPI app — ML endpoints only
+│   ├── main.py              # FastAPI app — ML + market data endpoints
 │   ├── model/
 │   │   ├── vectors.py       # cosine similarity + user vector updates
 │   │   ├── bandit.py        # Thompson Sampling
 │   │   └── scorer.py        # hybrid combiner + batch generator
 │   ├── data/
-│   │   ├── fetch.py         # yfinance fetcher
+│   │   ├── fetch.py         # Alpaca + yfinance fetcher, Wikipedia descriptions
 │   │   ├── features.py      # 6-dim feature engineering + normalisation
 │   │   └── pipeline.py      # orchestrator — run to seed Snowflake
 │   └── db/
@@ -137,12 +115,10 @@ stock-swipe/
 │       └── schema.sql       # STOCKS, USERS, SWIPES tables
 └── frontend/
     ├── api/
-    │   ├── quote.js         # Vercel serverless — live quote via yahoo-finance2
-    │   ├── history.js       # Vercel serverless — OHLCV chart data
-    │   └── news.js          # Vercel serverless — news + sentiment
+    │   └── news.js          # Vercel serverless — news via Google News RSS
     └── src/
-        ├── components/      # SwipeCard, SwipeStack, ConvergenceBar, IndexChart, …
+        ├── components/      # SwipeCard, SwipeStack, StockChart, IndexChart, …
         ├── pages/           # Onboard, Swipe, Portfolio, Index
-        ├── api/client.js    # axios wrapper — routes ML to Render, data to Vercel
+        ├── api/client.js    # axios wrapper — routes ML/data to Render, news to Vercel
         └── store/           # zustand session store
 ```
