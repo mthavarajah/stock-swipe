@@ -115,10 +115,10 @@ stock-swipe/
 │       └── schema.sql       # STOCKS, USERS, SWIPES tables
 └── frontend/
     ├── api/
-    │   └── news.js          # Vercel serverless — news via Google News RSS
+    │   └── news.js          # News via Google News RSS
     └── src/
         ├── components/      # SwipeCard, SwipeStack, StockChart, IndexChart, …
         ├── pages/           # Onboard, Swipe, Portfolio, Index
-        ├── api/client.js    # axios wrapper — routes ML/data to Render, news to Vercel
+        ├── api/client.js    # axios wrapper — routes ML/data and news for deployment
         └── store/           # zustand session store
 ```
